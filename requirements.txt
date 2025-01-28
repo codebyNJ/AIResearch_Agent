@@ -1,6 +1,0 @@
-streamlit
-requests
-markdownify
-huggingface_hub
-smolagents
-python-dotenv

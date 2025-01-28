@@ -1,0 +1,5 @@
+smolagents
+streamlit
+markdownify
+huggingface_hub
+dotenv

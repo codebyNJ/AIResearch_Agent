@@ -1,5 +1,6 @@
-smolagents
 streamlit
+requests
 markdownify
 huggingface_hub
-dotenv
+smolagents
+python-dotenv

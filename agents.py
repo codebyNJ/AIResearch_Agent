@@ -3,6 +3,7 @@ import os
 import re
 import requests
 import json
+from datetime import datetime, timedelta
 from markdownify import markdownify
 from requests.exceptions import RequestException
 from smolagents import (
@@ -28,6 +29,104 @@ if not HF_TOKEN:
 # Log in to Hugging Face
 login(HF_TOKEN)
 
+@tool
+def enhanced_search(query: str, time_period: str = "m") -> dict:
+    """
+    Enhanced search tool that explicitly requests recent results and returns URLs.
+    
+    Args:
+        query: Search query string
+        time_period: Time period for results ('d' for day, 'w' for week, 'm' for month)
+    
+    Returns:
+        dict: Search results with timestamps, URLs, and relevance scores
+    """
+    try:
+        # Use DuckDuckGo HTML API for better results
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        # Add explicit time-based keywords to the query
+        current_year = datetime.now().year
+        time_keywords = f"{current_year} {query}"
+        
+        # First request to get token
+        response = requests.get('https://html.duckduckgo.com/html/', headers=headers)
+        
+        # Extract search parameters
+        search_params = {
+            'q': time_keywords,
+            's': '0',
+            'dc': '20',
+            'v': 'l',
+            'o': 'json',
+            'api': '/d.js',
+        }
+        
+        # Make the actual search request
+        search_response = requests.post(
+            'https://html.duckduckgo.com/html/',
+            headers=headers,
+            data=search_params
+        )
+        
+        if search_response.status_code == 200:
+            # Parse the HTML response to extract results
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(search_response.text, 'html.parser')
+            
+            results = []
+            for result in soup.find_all('div', class_='result__body'):
+                title = result.find('a', class_='result__a')
+                snippet = result.find('a', class_='result__snippet')
+                url = title.get('href') if title else None
+                
+                if title and url:
+                    result_data = {
+                        'title': title.text.strip(),
+                        'url': url,
+                        'snippet': snippet.text.strip() if snippet else '',
+                    }
+                    
+                    # Extract and verify dates in the content
+                    date_matches = re.findall(r'\b20\d{2}\b', result_data['snippet'])
+                    result_data['verified_year'] = max(map(int, date_matches)) if date_matches else None
+                    
+                    # Score results based on recency
+                    result_data['recency_score'] = calculate_recency_score(result_data['verified_year'])
+                    
+                    results.append(result_data)
+            
+            return {
+                'Results': results[:10],  # Limit to top 10 results
+                'meta': {
+                    'query': query,
+                    'time_period': time_period,
+                    'total_results': len(results)
+                }
+            }
+        
+        return {"error": "Search failed", "status": search_response.status_code}
+    
+    except Exception as e:
+        return {"error": str(e)}
+
+
+
+# Add this to your requirements for the enhanced search functionality
+# pip install beautifulsoup4
+
+def calculate_recency_score(year: int | None) -> float:
+    """Calculate a score based on how recent the content is."""
+    if not year:
+        return 0.0
+    
+    current_year = datetime.now().year
+    years_old = current_year - year
+    
+    # Exponential decay based on age
+    return max(0.0, 1.0 * (0.8 ** years_old))
 
 @tool
 def visit_webpage(url: str) -> str:
@@ -52,67 +151,67 @@ def visit_webpage(url: str) -> str:
     except Exception as e:
         return f"An unexpected error occurred: {str(e)}"
 
-
 def format_agent_response(response):
-    """Format the agent's response into a readable string. In a proper sentence that human being can understand with bullet points."""
+    """Format the agent's response into a readable string with URLs."""
     if isinstance(response, dict):
         formatted_parts = []
         
+        if 'Results' in response:
+            formatted_parts.append("## Search Results")
+            for idx, result in enumerate(response['Results'], 1):
+                formatted_parts.append(f"### {idx}. {result.get('title', 'No Title')}")
+                formatted_parts.append(f"**Source:** {result.get('url', 'No URL')}")
+                formatted_parts.append(result.get('snippet', 'No description available'))
+                formatted_parts.append("---")
+        
         if 'thoughts' in response:
-            formatted_parts.append("## Thought Process")
+            formatted_parts.append("## Analysis")
             formatted_parts.append(response['thoughts'])
         
-        if 'observations' in response:
-            formatted_parts.append("## Observations")
-            formatted_parts.append(response['observations'])
-        
         if 'answer' in response:
-            formatted_parts.append("## Answer")
+            formatted_parts.append("## Summary")
             formatted_parts.append(response['answer'])
-        
-        if not formatted_parts:
-            formatted_parts.append("## Results")
-            for key, value in response.items():
-                formatted_parts.append(f"### {key.title()}")
-                formatted_parts.append(str(value))
         
         return "\n\n".join(formatted_parts)
     else:
         return str(response)
 
-
 # Initialize the model and agents
 @st.cache_resource
 def initialize_agents():
-    # Initialize the model
     model = HfApiModel(
         model_id="Qwen/Qwen2.5-Coder-32B-Instruct",
         token=HF_TOKEN
     )
+    
     web_agent = ToolCallingAgent(
-        tools=[DuckDuckGoSearchTool(), visit_webpage],
+        tools=[enhanced_search, visit_webpage],
         model=model,
         max_steps=10,
     )
+    
     managed_web_agent = ManagedAgent(
         agent=web_agent,
         name="search",
-        description="Runs web searches for you. Give it your query as an argument.",
+        description="Performs enhanced web searches with recency prioritization.",
     )
+    
     manager_agent = CodeAgent(
         tools=[],
         model=model,
         managed_agents=[managed_web_agent],
-        additional_authorized_imports=["time", "numpy", "pandas"],
+        additional_authorized_imports=["time", "numpy", "pandas", "datetime"],
     )
+    
     return manager_agent
-
 
 # Cache webpage content
 @st.cache_data
 def fetch_webpage_content(url):
     return visit_webpage(url)
 
+# Sidebar
+# [Previous imports and initial code remain the same until the sidebar section]
 
 # Sidebar
 with st.sidebar:
@@ -126,6 +225,22 @@ with st.sidebar:
         value="Moderate"
     )
     
+    # Fixed time period selector
+    time_options = ["Last 24 Hours", "Last Week", "Last Month"]
+    time_period_display = st.select_slider(
+        "Time Period",
+        options=time_options,
+        value="Last Week"
+    )
+    
+    # Convert display value to API parameter
+    time_period_map = {
+        "Last 24 Hours": "d",
+        "Last Week": "w",
+        "Last Month": "m"
+    }
+    time_period = time_period_map[time_period_display]
+    
     st.markdown("---")
     st.markdown("### 📜 Search History")
     if 'search_history' not in st.session_state:
@@ -134,6 +249,7 @@ with st.sidebar:
     for hist in st.session_state.search_history[-5:]:
         st.markdown(f"• {hist}")
 
+# [Rest of the code remains the same]
 
 # Main content
 st.title("🔍 Web Research Assistant")
@@ -159,8 +275,16 @@ if search_button and query:
             # Create tabs for different views
             result_tab, sources_tab, analysis_tab = st.tabs(["📝 Results", "🔗 Sources", "📊 Analysis"])
             
-            # Perform the search
-            raw_result = manager_agent.run(query)
+            # Perform the search with time period
+            raw_result = manager_agent.run(
+                f"""
+                Search for recent information about: {query}
+                Time period: {time_period}
+                Required year: {datetime.now().year}
+                Depth: {search_depth}
+                Max results: {max_results}
+                """
+            )
             
             # Format the result
             formatted_result = format_agent_response(raw_result)
@@ -236,6 +360,20 @@ if search_button and query:
                 with col3:
                     st.metric("Sections", len(formatted_result.split("##")) - 1)
                 
+                # Add recency analysis
+                st.markdown("### 📅 Recency Analysis")
+                if isinstance(raw_result, dict) and 'Results' in raw_result:
+                    recency_data = pd.DataFrame([
+                        {
+                            'Source': f"Source {idx + 1}",
+                            'Year': result.get('verified_year', 'Unknown'),
+                            'Recency Score': result.get('recency_score', 0)
+                        }
+                        for idx, result in enumerate(raw_result['Results'])
+                    ])
+                    
+                    st.dataframe(recency_data)
+                
         except Exception as e:
             st.error(f"🚨 An error occurred: {str(e)}")
             st.markdown("""
@@ -244,7 +382,6 @@ if search_button and query:
             - Checking your internet connection
             - Trying again in a few moments
             """)
-
 
 # Footer with quick tips and stats
 st.markdown("---")

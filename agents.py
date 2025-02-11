@@ -1,7 +1,11 @@
 import streamlit as st
 import os
+import pandas as pd
 import re
 import requests
+import sys
+import io
+from contextlib import contextmanager
 import json
 from datetime import datetime, timedelta
 from markdownify import markdownify
@@ -20,6 +24,35 @@ from huggingface_hub import login
 # Load environment variables
 load_dotenv()
 
+# Create a StringIO object to capture the output
+class StreamCapture(io.StringIO):
+    def __init__(self):
+        super().__init__()
+        self.timestamps = []
+        self.logs = []
+
+    def write(self, text):
+        if text.strip():  # Only log non-empty strings
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.timestamps.append(timestamp)
+            self.logs.append(text.strip())
+        return super().write(text)
+
+# Context manager for capturing output
+@contextmanager
+def capture_output():
+    stream_capture = StreamCapture()
+    old_stdout, old_stderr = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = stream_capture, stream_capture
+    try:
+        yield stream_capture
+    finally:
+        sys.stdout, sys.stderr = old_stdout, old_stderr
+
+# Initialize the log container in session state
+if 'log_container' not in st.session_state:
+    st.session_state.log_container = []
+
 # Check for HF token
 HF_TOKEN = os.getenv("HF_TOKEN")
 if not HF_TOKEN:
@@ -28,6 +61,13 @@ if not HF_TOKEN:
 
 # Log in to Hugging Face
 login(HF_TOKEN)
+
+
+
+
+
+
+
 
 @tool
 def enhanced_search(query: str, time_period: str = "m") -> dict:
@@ -164,6 +204,30 @@ def format_agent_response(response):
                 formatted_parts.append(result.get('snippet', 'No description available'))
                 formatted_parts.append("---")
         
+        # Add log display section
+        st.markdown("---")
+        log_expander = st.expander("📋 Terminal Logs", expanded=False)
+        with log_expander:
+            # Add controls for the log display
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown("### Terminal Output")
+            with col2:
+                if st.button("Clear Logs"):
+                    st.session_state.log_container = []
+            
+            # Create a container for the logs
+            log_placeholder = st.empty()
+            
+            # Display logs with timestamps in a formatted way
+            if st.session_state.log_container:
+                log_text = ""
+                for timestamp, log in st.session_state.log_container:
+                    log_text += f"`[{timestamp}]` {log}\n"
+                log_placeholder.markdown(log_text)
+            else:
+                log_placeholder.info("No logs to display yet.")
+                
         if 'thoughts' in response:
             formatted_parts.append("## Analysis")
             formatted_parts.append(response['thoughts'])
@@ -272,20 +336,35 @@ if search_button and query:
     
     with st.spinner("🕵️‍♂️ Researching..."):
         try:
-            # Create tabs for different views
-            result_tab, sources_tab, analysis_tab = st.tabs(["📝 Results", "🔗 Sources", "📊 Analysis"])
-            
-            # Perform the search with time period
-            raw_result = manager_agent.run(
-                f"""
-                Search for recent information about: {query}
-                Time period: {time_period}
-                Required year: {datetime.now().year}
-                Depth: {search_depth}
-                Max results: {max_results}
-                """
-            )
-            
+            # Capture all output during the search process
+            with capture_output() as output:
+                # Create tabs for different views
+                result_tab, sources_tab, analysis_tab, logs_tab = st.tabs(
+                    ["📝 Results", "🔗 Sources", "📊 Analysis", "📋 Logs"]
+                )
+                
+                # Perform the search with time period
+                raw_result = manager_agent.run(
+                    f"""
+                    Search for recent information about: {query}
+                    Time period: {time_period}
+                    Required year: {datetime.now().year}
+                    Depth: {search_depth}
+                    Max results: {max_results}
+                    """
+                )
+                
+                # Get the captured output
+                captured_logs = list(zip(output.timestamps, output.logs))
+                st.session_state.log_container.extend(captured_logs)
+                
+                # Display logs in the logs tab
+                with logs_tab:
+                    st.markdown("### 📋 Search Logs")
+                    for timestamp, log in captured_logs:
+                        st.markdown(f"`[{timestamp}]` {log}")
+                
+
             # Format the result
             formatted_result = format_agent_response(raw_result)
             

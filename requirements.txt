@@ -1,6 +1,6 @@
-streamlit==1.5.0
+streamlit
 requests
 markdownify
 huggingface_hub
-smolagents
+smolagents==1.5.0
 python-dotenv
